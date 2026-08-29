@@ -1,0 +1,13 @@
+[package]
+name = "data_feed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "sync"] }
+crossbeam-channel = "0.5"
+rand = "0.10.2"
+chrono = "0.4.45"
+yahoo_finance_api = "=2.1.0"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2.0.20"

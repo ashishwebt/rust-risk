@@ -1,0 +1,18 @@
+[package]
+name = "market_risk_dashboard"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+risk_core = { path = "../risk_core" }
+data_feed = { path = "../data_feed" }
+eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "glow", "persistence", "x11"] }
+egui = "0.36.1"
+egui_extras = { version = "0.36.1" }
+crossbeam-channel = "0.5"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "market_risk_dashboard"
+path = "src/main.rs"
