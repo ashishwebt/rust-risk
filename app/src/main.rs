@@ -3,6 +3,7 @@ mod state;
 
 use data_feed::FeedStatus;
 use eframe::egui;
+use egui::epaint::CornerRadius;
 use state::{AppState, SourceChoice};
 
 struct DashboardApp {
@@ -17,111 +18,152 @@ impl Default for DashboardApp {
     }
 }
 
+/// Apply a dark finance-terminal theme.
+fn setup_visuals(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+
+    // Background / panel shades
+    visuals.panel_fill = egui::Color32::from_rgb(14, 17, 23);
+    visuals.window_fill = egui::Color32::from_rgb(14, 17, 23);
+    visuals.faint_bg_color = egui::Color32::from_rgb(20, 24, 33);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(10, 12, 18);
+
+    // Widget backgrounds
+    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(22, 27, 38);
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(28, 34, 48);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(38, 46, 64);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(48, 100, 180);
+
+    // Borders
+    visuals.widgets.noninteractive.bg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 50, 68));
+    visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 62, 85));
+
+    // Text
+    visuals.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(190, 200, 220));
+    visuals.override_text_color = Some(egui::Color32::from_rgb(200, 210, 230));
+
+    // Selection / accent
+    visuals.selection.bg_fill = egui::Color32::from_rgb(30, 80, 160);
+    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 150, 255));
+
+    // Window corner radius
+    visuals.window_corner_radius = CornerRadius::same(6);
+
+    ctx.set_visuals(visuals);
+
+    // Spacing – use style_mut_of so we stay in dark-theme scope
+    ctx.style_mut_of(egui::Theme::Dark, |style| {
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    });
+}
+
 impl eframe::App for DashboardApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Non-UI logic belongs here in eframe 0.36.
-        // Drain the normalized feed channel.
         self.state.pump_feed();
-
-        // Keep refreshing for real-time market data.
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Since eframe 0.36 gives us a root Ui instead of the old
-        // Context-based update() API, we build the dashboard inside it.
-
         egui::Frame::default()
+            .inner_margin(8i8)
             .show(ui, |ui| {
                 // =========================
                 // Toolbar
                 // =========================
-
-                ui.add_space(4.0);
-
                 ui.horizontal(|ui| {
-                    ui.heading("Market Risk Dashboard");
-                    ui.separator();
-
-                    ui.label("Data source:");
-
-                    if ui
-                        .selectable_label(
-                            self.state.source_choice == SourceChoice::Simulated,
-                            "Simulated",
+                    // App title
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("⬡  Market Risk Dashboard")
+                                .size(18.0)
+                                .color(egui::Color32::from_rgb(120, 180, 255))
+                                .strong(),
                         )
-                        .clicked()
-                    {
-                        self.state.switch_source(SourceChoice::Simulated);
+                        .wrap(),
+                    );
+
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    ui.label(
+                        egui::RichText::new("Data source:")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(140, 155, 175)),
+                    );
+
+                    for (label, choice) in [
+                        ("Simulated", SourceChoice::Simulated),
+                        ("Yahoo Finance", SourceChoice::Yahoo),
+                    ] {
+                        let selected = self.state.source_choice == choice;
+                        let text = if selected {
+                            egui::RichText::new(label)
+                                .color(egui::Color32::from_rgb(100, 200, 255))
+                                .strong()
+                        } else {
+                            egui::RichText::new(label)
+                                .color(egui::Color32::from_rgb(160, 175, 195))
+                        };
+                        if ui.selectable_label(selected, text).clicked() {
+                            self.state.switch_source(choice);
+                        }
                     }
 
-                    if ui
-                        .selectable_label(
-                            self.state.source_choice == SourceChoice::Yahoo,
-                            "Yahoo Finance",
-                        )
-                        .clicked()
-                    {
-                        self.state.switch_source(SourceChoice::Yahoo);
-                    }
-
+                    ui.add_space(8.0);
                     ui.separator();
+                    ui.add_space(8.0);
 
-                    let (dot, text) = match &self.state.feed_status {
-                        FeedStatus::Connecting => {
-                            (egui::Color32::YELLOW, "connecting...".to_string())
-                        }
-
-                        FeedStatus::Connected => {
-                            (egui::Color32::GREEN, "connected".to_string())
-                        }
-
-                        FeedStatus::Disconnected(reason) => {
-                            (
-                                egui::Color32::GRAY,
-                                format!("disconnected: {reason}"),
-                            )
-                        }
-
-                        FeedStatus::Error(reason) => {
-                            (
-                                egui::Color32::RED,
-                                format!("error: {reason}"),
-                            )
-                        }
+                    // Status badge
+                    let (status_color, status_text) = match &self.state.feed_status {
+                        FeedStatus::Connecting => (
+                            egui::Color32::from_rgb(255, 200, 50),
+                            "● Connecting…".to_string(),
+                        ),
+                        FeedStatus::Connected => (
+                            egui::Color32::from_rgb(50, 220, 120),
+                            "● Connected".to_string(),
+                        ),
+                        FeedStatus::Disconnected(r) => (
+                            egui::Color32::from_rgb(140, 145, 155),
+                            format!("● Disconnected: {r}"),
+                        ),
+                        FeedStatus::Error(r) => (
+                            egui::Color32::from_rgb(255, 80, 80),
+                            format!("● Error: {r}"),
+                        ),
                     };
-
-                    ui.colored_label(dot, "●");
-                    ui.label(text);
+                    ui.label(
+                        egui::RichText::new(status_text)
+                            .size(12.0)
+                            .color(status_color),
+                    );
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(10.0);
 
                 // =========================
                 // Dashboard grid
                 // =========================
-
                 ui.columns(2, |columns| {
                     // LEFT COLUMN
                     egui::ScrollArea::vertical()
                         .id_salt("col_left")
                         .show(&mut columns[0], |ui| {
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                panels::positions::positions_panel(
-                                    ui,
-                                    &self.state,
-                                );
+                            panel_frame().show(ui, |ui| {
+                                panels::positions::positions_panel(ui, &self.state);
                             });
 
-                            ui.add_space(10.0);
+                            ui.add_space(12.0);
 
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                panels::var_panel::var_panel(
-                                    ui,
-                                    &mut self.state,
-                                );
+                            panel_frame().show(ui, |ui| {
+                                panels::var_panel::var_panel(ui, &mut self.state);
                             });
                         });
 
@@ -129,34 +171,41 @@ impl eframe::App for DashboardApp {
                     egui::ScrollArea::vertical()
                         .id_salt("col_right")
                         .show(&mut columns[1], |ui| {
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                panels::vol_surface_panel::vol_surface_panel(
-                                    ui,
-                                    &self.state,
-                                );
+                            panel_frame().show(ui, |ui| {
+                                panels::vol_surface_panel::vol_surface_panel(ui, &self.state);
                             });
 
-                            ui.add_space(10.0);
+                            ui.add_space(12.0);
 
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                panels::stress_panel::stress_panel(
-                                    ui,
-                                    &self.state,
-                                );
+                            panel_frame().show(ui, |ui| {
+                                panels::stress_panel::stress_panel(ui, &self.state);
                             });
                         });
                 });
             });
     }
 }
+
+/// Consistent panel frame used for all dashboard cards.
+pub fn panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(18, 22, 32))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 48, 68)))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(12i8)
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 860.0]),
         ..Default::default()
     };
     eframe::run_native(
         "Market Risk Dashboard",
         options,
-        Box::new(|_cc| Ok(Box::new(DashboardApp::default()) as Box<dyn eframe::App>)),
+        Box::new(|cc| {
+            setup_visuals(&cc.egui_ctx);
+            Ok(Box::new(DashboardApp::default()) as Box<dyn eframe::App>)
+        }),
     )
 }
