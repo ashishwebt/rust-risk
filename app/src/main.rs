@@ -4,6 +4,7 @@ mod state;
 use data_feed::FeedStatus;
 use eframe::egui;
 use egui::epaint::CornerRadius;
+use egui_extras; // StripBuilder for non-overlapping columns
 use state::{AppState, SourceChoice};
 
 struct DashboardApp {
@@ -151,37 +152,47 @@ impl eframe::App for DashboardApp {
                 // =========================
                 // Dashboard grid
                 // =========================
-                ui.columns(2, |columns| {
-                    // LEFT COLUMN
-                    egui::ScrollArea::vertical()
-                        .id_salt("col_left")
-                        .show(&mut columns[0], |ui| {
-                            panel_frame().show(ui, |ui| {
-                                panels::positions::positions_panel(ui, &self.state);
-                            });
-
-                            ui.add_space(12.0);
-
-                            panel_frame().show(ui, |ui| {
-                                panels::var_panel::var_panel(ui, &mut self.state);
-                            });
+                egui_extras::StripBuilder::new(ui)
+                    .size(egui_extras::Size::remainder()) // left column
+                    .size(egui_extras::Size::exact(8.0))  // gutter
+                    .size(egui_extras::Size::remainder()) // right column
+                    .horizontal(|mut strip| {
+                        // LEFT COLUMN
+                        strip.cell(|ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("col_left")
+                                .show(ui, |ui| {
+                                    panel_frame().show(ui, |ui| {
+                                        panels::positions::positions_panel(ui, &self.state);
+                                    });
+                                    ui.add_space(12.0);
+                                    panel_frame().show(ui, |ui| {
+                                        panels::var_panel::var_panel(ui, &mut self.state);
+                                    });
+                                });
                         });
 
-                    // RIGHT COLUMN
-                    egui::ScrollArea::vertical()
-                        .id_salt("col_right")
-                        .show(&mut columns[1], |ui| {
-                            panel_frame().show(ui, |ui| {
-                                panels::vol_surface_panel::vol_surface_panel(ui, &self.state);
-                            });
+                        // GUTTER
+                        strip.empty();
 
-                            ui.add_space(12.0);
-
-                            panel_frame().show(ui, |ui| {
-                                panels::stress_panel::stress_panel(ui, &self.state);
-                            });
+                        // RIGHT COLUMN
+                        strip.cell(|ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("col_right")
+                                .show(ui, |ui| {
+                                    panel_frame().show(ui, |ui| {
+                                        panels::vol_surface_panel::vol_surface_panel(
+                                            ui,
+                                            &self.state,
+                                        );
+                                    });
+                                    ui.add_space(12.0);
+                                    panel_frame().show(ui, |ui| {
+                                        panels::stress_panel::stress_panel(ui, &self.state);
+                                    });
+                                });
                         });
-                });
+                    });
             });
     }
 }

@@ -14,6 +14,7 @@ pub fn positions_panel(ui: &mut egui::Ui, state: &AppState) {
     ui.add_space(8.0);
 
     TableBuilder::new(ui)
+        .id_salt("positions_table")
         .striped(true)
         .resizable(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))

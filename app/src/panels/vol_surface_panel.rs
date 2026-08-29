@@ -12,6 +12,7 @@ pub fn vol_surface_panel(ui: &mut egui::Ui, state: &AppState) {
     let surf = &state.vol_surface;
 
     let mut builder = TableBuilder::new(ui)
+        .id_salt("vol_surface_table")
         .striped(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .column(Column::auto().at_least(72.0));

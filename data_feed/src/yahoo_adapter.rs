@@ -4,10 +4,10 @@ use crossbeam_channel::Sender;
 use std::time::Duration;
 use yahoo_finance_api as yahoo;
 
-/// Pulls quotes from Yahoo Finance on a fixed interval and translates each
-/// response into `MarketTick`s. This is a "pull" transport, but the UI
-/// never knows that: it only ever sees `FeedEvent`s on the shared channel,
-/// exactly like it would from a push-based websocket adapter.
+/// Polls Yahoo Finance on a fixed interval and translates each response into
+/// `MarketTick`s on the shared channel. Uses `yahoo_finance_api` v4 which
+/// sets a proper User-Agent header, avoiding the 429 rate-limit errors seen
+/// with v2.x.
 pub struct YahooPollAdapter {
     pub poll_interval: Duration,
 }
@@ -15,7 +15,7 @@ pub struct YahooPollAdapter {
 impl Default for YahooPollAdapter {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_secs(5),
+            poll_interval: Duration::from_secs(15),
         }
     }
 }
@@ -32,37 +32,53 @@ impl MarketDataSource for YahooPollAdapter {
                 Ok(rt) => rt,
                 Err(e) => {
                     let _ = tx.send(FeedEvent::Status(FeedStatus::Error(format!(
-                        "failed to start tokio runtime: {e}"
+                        "tokio runtime error: {e}"
                     ))));
                     return;
                 }
             };
+
             rt.block_on(async move {
-                let provider = yahoo::YahooConnector::new();
+                // v4: YahooConnector::new() returns Result
+                let provider = match yahoo::YahooConnector::new() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = tx.send(FeedEvent::Status(FeedStatus::Error(format!(
+                            "failed to build Yahoo connector: {e}"
+                        ))));
+                        return;
+                    }
+                };
+
                 let _ = tx.send(FeedEvent::Status(FeedStatus::Connecting));
-                let mut first = true;
+
                 loop {
-                    if tx.is_full() {
-                        // no-op branch kept for clarity; crossbeam channels here are unbounded
-                    }
                     if tx.send(FeedEvent::Status(FeedStatus::Connected)).is_err() {
-                        return; // receiver dropped, stop polling
+                        return; // receiver dropped
                     }
+
                     for symbol in &symbols {
                         match provider.get_latest_quotes(symbol, "1d").await {
                             Ok(response) => {
-                                if let Ok(quote) = response.last_quote() {
-                                    let tick = MarketTick {
-                                        symbol: symbol.clone(),
-                                        price: quote.close,
-                                        bid: None,
-                                        ask: None,
-                                        volume: Some(quote.volume),
-                                        timestamp: quote.timestamp as i64,
-                                        source: DataSourceKind::YahooPull,
-                                    };
-                                    if tx.send(FeedEvent::Tick(tick)).is_err() {
-                                        return;
+                                match response.last_quote() {
+                                    Ok(quote) => {
+                                        let tick = MarketTick {
+                                            symbol: symbol.clone(),
+                                            price: quote.close,
+                                            bid: None,
+                                            ask: None,
+                                            volume: Some(quote.volume),
+                                            timestamp: quote.timestamp as i64,
+                                            source: DataSourceKind::YahooPull,
+                                        };
+                                        if tx.send(FeedEvent::Tick(tick)).is_err() {
+                                            return;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(FeedEvent::Status(FeedStatus::Error(
+                                            format!("{symbol}: no quote data ({e})"),
+                                        )));
                                     }
                                 }
                             }
@@ -73,9 +89,7 @@ impl MarketDataSource for YahooPollAdapter {
                             }
                         }
                     }
-                    if first {
-                        first = false;
-                    }
+
                     tokio::time::sleep(interval).await;
                 }
             });
