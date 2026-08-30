@@ -1,3 +1,4 @@
+mod db;
 mod panels;
 mod state;
 
@@ -208,7 +209,11 @@ impl eframe::App for DashboardApp {
                                                 panel_frame().show(ui, |ui| {
                                                     panels::positions::positions_panel(
                                                         ui,
-                                                        &self.state,
+                                                        &mut self.state,
+                                                    );
+                                                    panels::symbol_form_panel::symbol_form_panel(
+                                                        ui,
+                                                        &mut self.state,
                                                     );
                                                 });
                                                 ui.add_space(12.0);

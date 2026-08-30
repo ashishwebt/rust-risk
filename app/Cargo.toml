@@ -11,6 +11,7 @@ egui = "0.36.1"
 egui_extras = { version = "0.36.1" }
 crossbeam-channel = "0.5"
 chrono = "0.4"
+rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

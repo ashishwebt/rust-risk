@@ -1,8 +1,13 @@
-use data_feed::{FeedEvent, FeedManager, FeedStatus, MarketDataSource, MarketTick, MockPushAdapter, YahooPollAdapter};
+use crate::db;
+use data_feed::{
+    FeedEvent, FeedManager, FeedStatus, MarketDataSource, MarketTick, MockPushAdapter,
+    YahooPollAdapter,
+};
 use risk_core::{
     aggregate_greeks, historical_var, parametric_var, run_all_scenarios, Greeks, OptionType,
     Position, Scenario, ScenarioResult, VarConfig, VolSurface,
 };
+use rusqlite::Connection;
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -25,7 +30,68 @@ pub struct ErrorEntry {
     pub message: String,
 }
 
+// ---------------------------------------------------------------------------
+// Add-position form state
+// ---------------------------------------------------------------------------
+
+/// Which option type is selected in the add-position form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormOptionType {
+    Call,
+    Put,
+}
+
+impl From<FormOptionType> for OptionType {
+    fn from(f: FormOptionType) -> Self {
+        match f {
+            FormOptionType::Call => OptionType::Call,
+            FormOptionType::Put => OptionType::Put,
+        }
+    }
+}
+
+/// All mutable state for the "add position" form panel.
+pub struct PositionForm {
+    /// Whether the form panel is open.
+    pub open: bool,
+    pub symbol: String,
+    pub strike: String,
+    pub expiry: String,
+    pub volatility: String,
+    pub rate: String,
+    pub dividend_yield: String,
+    pub quantity: String,
+    pub contract_multiplier: String,
+    pub option_type: FormOptionType,
+    /// Validation error shown inside the form.
+    pub error: Option<String>,
+}
+
+impl Default for PositionForm {
+    fn default() -> Self {
+        Self {
+            open: false,
+            symbol: String::new(),
+            strike: "100.0".into(),
+            expiry: "0.25".into(),
+            volatility: "0.25".into(),
+            rate: "0.045".into(),
+            dividend_yield: "0.0".into(),
+            quantity: "1.0".into(),
+            contract_multiplier: "100.0".into(),
+            option_type: FormOptionType::Call,
+            error: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AppState
+// ---------------------------------------------------------------------------
+
 pub struct AppState {
+    pub db: Connection,
+
     pub feed_manager: FeedManager,
     pub feed_status: FeedStatus,
     pub source_choice: SourceChoice,
@@ -46,18 +112,24 @@ pub struct AppState {
 
     /// Rolling log of the last `ERROR_LOG_LEN` errors shown in the UI panel.
     pub error_log: VecDeque<ErrorEntry>,
+
+    /// State for the add-position form panel.
+    pub position_form: PositionForm,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        let positions = default_positions();
-        let symbols: Vec<String> = positions
-            .iter()
-            .map(|p| p.underlying_symbol.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
+impl AppState {
+    /// Build `AppState`, open / migrate the DB, load positions (seeding
+    /// defaults if the table is empty), and start the data feed.
+    pub fn new() -> Self {
+        // --- DB setup ---
+        let db = Connection::open("risk_dashboard.db")
+            .expect("failed to open risk_dashboard.db");
+        db::init_db(&db).expect("DB schema migration failed");
 
+        let positions = db::seed_defaults_if_empty(&db).expect("failed to load/seed positions from DB");
+
+        // --- Feed ---
+        let symbols = unique_symbols(&positions);
         let mut feed_manager = FeedManager::new();
         let starting_prices = positions
             .iter()
@@ -71,6 +143,7 @@ impl Default for AppState {
             symbols,
         );
 
+        // --- Vol surface ---
         let mut vol_surface = VolSurface::new(
             vec![90.0, 95.0, 100.0, 105.0, 110.0],
             vec![0.083, 0.25, 0.5, 1.0],
@@ -88,6 +161,7 @@ impl Default for AppState {
         );
 
         Self {
+            db,
             feed_manager,
             feed_status: FeedStatus::Connecting,
             source_choice: SourceChoice::Simulated,
@@ -101,7 +175,14 @@ impl Default for AppState {
             portfolio_greeks,
             last_error: None,
             error_log: VecDeque::new(),
+            position_form: PositionForm::default(),
         }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -122,6 +203,67 @@ impl AppState {
         if self.error_log.len() > ERROR_LOG_LEN {
             self.error_log.pop_front();
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Position management
+    // -----------------------------------------------------------------------
+
+    /// Add a position: persist to DB, push into in-memory list, re-subscribe feed.
+    pub fn add_position(&mut self, pos: Position) {
+        match db::save_position(&self.db, &pos) {
+            Ok(saved) => {
+                info!(id = saved.id, symbol = %saved.underlying_symbol, "position added");
+                self.positions.push(saved);
+                self.resubscribe_feed();
+                self.recompute();
+            }
+            Err(e) => {
+                self.log_error(format!("add_position DB error: {e}"));
+            }
+        }
+    }
+
+    /// Remove a position by id: delete from DB, remove from in-memory list, re-subscribe feed.
+    pub fn remove_position(&mut self, id: u64) {
+        match db::delete_position(&self.db, id) {
+            Ok(_) => {
+                self.positions.retain(|p| p.id != id);
+                // Drop P&L history for symbols no longer in the book.
+                let active: std::collections::HashSet<&str> = self
+                    .positions
+                    .iter()
+                    .map(|p| p.underlying_symbol.as_str())
+                    .collect();
+                self.pnl_history.retain(|sym, _| active.contains(sym.as_str()));
+                self.latest_ticks.retain(|sym, _| active.contains(sym.as_str()));
+                info!(id, "position removed");
+                self.resubscribe_feed();
+                self.recompute();
+            }
+            Err(e) => {
+                self.log_error(format!("remove_position DB error: {e}"));
+            }
+        }
+    }
+
+    /// Re-subscribe the active feed to the current symbol set.
+    fn resubscribe_feed(&mut self) {
+        let symbols = unique_symbols(&self.positions);
+        let starting_prices = self
+            .positions
+            .iter()
+            .map(|p| (p.underlying_symbol.clone(), p.spot))
+            .collect::<HashMap<_, _>>();
+
+        let adapter: Box<dyn MarketDataSource> = match self.source_choice {
+            SourceChoice::Simulated => Box::new(MockPushAdapter {
+                starting_prices,
+                volatility_per_tick: 0.0015,
+            }),
+            SourceChoice::Yahoo => Box::new(YahooPollAdapter::default()),
+        };
+        self.feed_manager.switch(adapter, symbols);
     }
 
     // -----------------------------------------------------------------------
@@ -200,25 +342,7 @@ impl AppState {
     pub fn switch_source(&mut self, choice: SourceChoice) {
         info!(from = ?self.source_choice, to = ?choice, "switching data source");
         self.source_choice = choice;
-        let symbols: Vec<String> = self
-            .positions
-            .iter()
-            .map(|p| p.underlying_symbol.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        let adapter: Box<dyn MarketDataSource> = match choice {
-            SourceChoice::Simulated => Box::new(MockPushAdapter {
-                starting_prices: self
-                    .positions
-                    .iter()
-                    .map(|p| (p.underlying_symbol.clone(), p.spot))
-                    .collect(),
-                volatility_per_tick: 0.0015,
-            }),
-            SourceChoice::Yahoo => Box::new(YahooPollAdapter::default()),
-        };
-        self.feed_manager.switch(adapter, symbols);
+        self.resubscribe_feed();
     }
 
     /// Combined historical-simulation VaR across all positions' P&L histories.
@@ -259,61 +383,17 @@ impl AppState {
     }
 }
 
-fn default_positions() -> Vec<Position> {
-    vec![
-        Position {
-            id: 1,
-            underlying_symbol: "AAPL".into(),
-            spot: 225.0,
-            strike: 230.0,
-            time_to_expiry: 0.25,
-            rate: 0.045,
-            dividend_yield: 0.005,
-            volatility: 0.28,
-            option_type: OptionType::Call,
-            quantity: 10.0,
-            contract_multiplier: 100.0,
-        },
-        Position {
-            id: 2,
-            underlying_symbol: "AAPL".into(),
-            spot: 225.0,
-            strike: 210.0,
-            time_to_expiry: 0.5,
-            rate: 0.045,
-            dividend_yield: 0.005,
-            volatility: 0.30,
-            option_type: OptionType::Put,
-            quantity: -5.0,
-            contract_multiplier: 100.0,
-        },
-        Position {
-            id: 3,
-            underlying_symbol: "MSFT".into(),
-            spot: 420.0,
-            strike: 430.0,
-            time_to_expiry: 0.17,
-            rate: 0.045,
-            dividend_yield: 0.007,
-            volatility: 0.24,
-            option_type: OptionType::Call,
-            quantity: 8.0,
-            contract_multiplier: 100.0,
-        },
-        Position {
-            id: 4,
-            underlying_symbol: "SPY".into(),
-            spot: 560.0,
-            strike: 540.0,
-            time_to_expiry: 1.0,
-            rate: 0.045,
-            dividend_yield: 0.013,
-            volatility: 0.16,
-            option_type: OptionType::Put,
-            quantity: 20.0,
-            contract_multiplier: 100.0,
-        },
-    ]
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn unique_symbols(positions: &[Position]) -> Vec<String> {
+    positions
+        .iter()
+        .map(|p| p.underlying_symbol.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn seed_vol_surface(surface: &mut VolSurface) {

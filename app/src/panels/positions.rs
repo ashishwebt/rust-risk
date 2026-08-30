@@ -9,9 +9,12 @@ const HEADER_DIM: egui::Color32 = egui::Color32::from_rgb(100, 115, 140);
 const POSITIVE: egui::Color32 = egui::Color32::from_rgb(60, 210, 120);
 const NEGATIVE: egui::Color32 = egui::Color32::from_rgb(240, 90, 90);
 
-pub fn positions_panel(ui: &mut egui::Ui, state: &AppState) {
+pub fn positions_panel(ui: &mut egui::Ui, state: &mut AppState) {
     panel_header(ui, "📋  Positions & Greeks");
     ui.add_space(8.0);
+
+    // Collect ids to remove after the table (can't mutate state mid-loop).
+    let mut remove_id: Option<u64> = None;
 
     TableBuilder::new(ui)
         .id_salt("positions_table")
@@ -30,10 +33,11 @@ pub fn positions_panel(ui: &mut egui::Ui, state: &AppState) {
         .column(Column::auto().at_least(72.0)) // Vega
         .column(Column::auto().at_least(72.0)) // Theta
         .column(Column::auto().at_least(72.0)) // Rho
+        .column(Column::exact(60.0))            // Remove
         .header(24.0, |mut header| {
             for label in [
                 "Symbol", "Type", "Spot", "Strike", "Exp (y)", "Qty",
-                "Price", "Delta", "Gamma", "Vega", "Theta", "Rho",
+                "Price", "Delta", "Gamma", "Vega", "Theta", "Rho", "",
             ] {
                 header.col(|ui| {
                     ui.label(
@@ -50,6 +54,7 @@ pub fn positions_panel(ui: &mut egui::Ui, state: &AppState) {
                 let inputs = pos.bs_inputs();
                 let price = inputs.price();
                 let g = greeks(&inputs);
+                let pos_id = pos.id;
 
                 body.row(26.0, |mut row| {
                     row.col(|ui| {
@@ -111,9 +116,27 @@ pub fn positions_panel(ui: &mut egui::Ui, state: &AppState) {
                         ui.label(egui::RichText::new(format!("{:.3}", g.rho / 100.0))
                             .color(egui::Color32::from_rgb(160, 175, 200)));
                     });
+                    row.col(|ui| {
+                        let btn = egui::Button::new(
+                            egui::RichText::new("✕")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(220, 80, 80)),
+                        )
+                        .corner_radius(CornerRadius::same(3))
+                        .fill(egui::Color32::from_rgb(50, 25, 25));
+
+                        if ui.add(btn).on_hover_text("Remove position").clicked() {
+                            remove_id = Some(pos_id);
+                        }
+                    });
                 });
             }
         });
+
+    // Apply deferred removal after the table borrow ends.
+    if let Some(id) = remove_id {
+        state.remove_position(id);
+    }
 
     ui.add_space(12.0);
     ui.separator();
