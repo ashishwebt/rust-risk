@@ -1,6 +1,7 @@
 use crate::event::FeedEvent;
 use crate::source::MarketDataSource;
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use tracing::info;
 
 /// Owns the active data source and the single channel the UI drains.
 /// Switching between push/pull/remote implementations is just swapping
@@ -27,7 +28,14 @@ impl FeedManager {
     /// replaced/dropped (checked via `send` failing), or simply keep
     /// running harmlessly in the background for this scaffold.
     pub fn switch(&mut self, source: Box<dyn MarketDataSource>, symbols: Vec<String>) {
-        self.active_name = source.name().to_string();
+        let new_name = source.name().to_string();
+        info!(
+            previous = %self.active_name,
+            next = %new_name,
+            symbols = ?symbols,
+            "FeedManager switching source"
+        );
+        self.active_name = new_name;
         source.start(symbols, self.tx.clone());
     }
 

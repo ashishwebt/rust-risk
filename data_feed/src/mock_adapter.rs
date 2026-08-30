@@ -4,6 +4,7 @@ use crossbeam_channel::Sender;
 use rand::RngExt;
 use std::collections::HashMap;
 use std::time::Duration;
+use tracing::{debug, info};
 
 /// Simulates a push-style feed (irregular arrival times, like a websocket)
 /// via a random walk. Useful for demoing/dev without network access, and
@@ -38,6 +39,12 @@ impl MarketDataSource for MockPushAdapter {
             .collect();
         let vol = self.volatility_per_tick;
 
+        info!(
+            symbols = ?symbols,
+            volatility_per_tick = vol,
+            "MockPushAdapter starting"
+        );
+
         std::thread::spawn(move || {
             let _ = tx.send(FeedEvent::Status(FeedStatus::Connecting));
             let mut rng = rand::rng();
@@ -47,6 +54,13 @@ impl MarketDataSource for MockPushAdapter {
                     let price = prices.entry(symbol.clone()).or_insert(100.0);
                     let shock: f64 = rng.random_range(-1.0..1.0) * vol;
                     *price = (*price * (1.0 + shock)).max(0.01);
+
+                    debug!(
+                        symbol = %symbol,
+                        price = *price,
+                        shock = shock,
+                        "mock tick generated"
+                    );
 
                     let tick = MarketTick {
                         symbol: symbol.clone(),
@@ -58,7 +72,8 @@ impl MarketDataSource for MockPushAdapter {
                         source: DataSourceKind::MockPush,
                     };
                     if tx.send(FeedEvent::Tick(tick)).is_err() {
-                        return; // receiver dropped
+                        info!("MockPushAdapter: receiver dropped, shutting down");
+                        return;
                     }
                 }
                 // Irregular arrival to mimic a real push feed.

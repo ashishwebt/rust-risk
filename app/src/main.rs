@@ -6,6 +6,9 @@ use eframe::egui;
 use egui::epaint::CornerRadius;
 use egui_extras; // StripBuilder for non-overlapping columns
 use state::{AppState, SourceChoice};
+use tracing::info;
+use tracing_appender::rolling;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 struct DashboardApp {
     state: AppState,
@@ -17,6 +20,41 @@ impl Default for DashboardApp {
             state: AppState::default(),
         }
     }
+}
+
+/// Initialize the tracing subscriber.
+///
+/// - Writes structured JSON logs to `logs/dashboard.log` (rolling daily).
+/// - Writes human-readable logs to stderr (controlled by `RUST_LOG`; defaults to `info`).
+fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
+    // Create logs directory next to the binary if it doesn't exist.
+    let _ = std::fs::create_dir_all("logs");
+
+    // Rolling file appender (new file each day: logs/dashboard.YYYY-MM-DD)
+    let file_appender = rolling::daily("logs", "dashboard.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    // JSON layer → file
+    let file_layer = fmt::layer()
+        .json()
+        .with_writer(non_blocking)
+        .with_ansi(false);
+
+    // Pretty layer → stderr
+    let stderr_layer = fmt::layer()
+        .pretty()
+        .with_writer(std::io::stderr)
+        .with_ansi(true);
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(stderr_layer)
+        .init();
+
+    guard
 }
 
 /// Apply a dark finance-terminal theme.
@@ -55,7 +93,6 @@ fn setup_visuals(ctx: &egui::Context) {
 
     ctx.set_visuals(visuals);
 
-    // Spacing – use style_mut_of so we stay in dark-theme scope
     ctx.style_mut_of(egui::Theme::Dark, |style| {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(10.0, 4.0);
@@ -76,7 +113,6 @@ impl eframe::App for DashboardApp {
                 // Toolbar
                 // =========================
                 ui.horizontal(|ui| {
-                    // App title
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new("⬡  Market Risk Dashboard")
@@ -153,21 +189,60 @@ impl eframe::App for DashboardApp {
                 // Dashboard grid
                 // =========================
                 egui_extras::StripBuilder::new(ui)
-                    .size(egui_extras::Size::remainder()) // left column
+                    .size(egui_extras::Size::remainder()) // main rows
                     .size(egui_extras::Size::exact(8.0))  // gutter
-                    .size(egui_extras::Size::remainder()) // right column
-                    .horizontal(|mut strip| {
-                        // LEFT COLUMN
+                    .size(egui_extras::Size::exact(140.0)) // error log panel height
+                    .vertical(|mut strip| {
+                        // TOP: two-column layout
                         strip.cell(|ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("col_left")
-                                .show(ui, |ui| {
-                                    panel_frame().show(ui, |ui| {
-                                        panels::positions::positions_panel(ui, &self.state);
+                            egui_extras::StripBuilder::new(ui)
+                                .size(egui_extras::Size::remainder())
+                                .size(egui_extras::Size::exact(8.0))
+                                .size(egui_extras::Size::remainder())
+                                .horizontal(|mut strip| {
+                                    // LEFT COLUMN
+                                    strip.cell(|ui| {
+                                        egui::ScrollArea::vertical()
+                                            .id_salt("col_left")
+                                            .show(ui, |ui| {
+                                                panel_frame().show(ui, |ui| {
+                                                    panels::positions::positions_panel(
+                                                        ui,
+                                                        &self.state,
+                                                    );
+                                                });
+                                                ui.add_space(12.0);
+                                                panel_frame().show(ui, |ui| {
+                                                    panels::var_panel::var_panel(
+                                                        ui,
+                                                        &mut self.state,
+                                                    );
+                                                });
+                                            });
                                     });
-                                    ui.add_space(12.0);
-                                    panel_frame().show(ui, |ui| {
-                                        panels::var_panel::var_panel(ui, &mut self.state);
+
+                                    // GUTTER
+                                    strip.empty();
+
+                                    // RIGHT COLUMN
+                                    strip.cell(|ui| {
+                                        egui::ScrollArea::vertical()
+                                            .id_salt("col_right")
+                                            .show(ui, |ui| {
+                                                panel_frame().show(ui, |ui| {
+                                                    panels::vol_surface_panel::vol_surface_panel(
+                                                        ui,
+                                                        &self.state,
+                                                    );
+                                                });
+                                                ui.add_space(12.0);
+                                                panel_frame().show(ui, |ui| {
+                                                    panels::stress_panel::stress_panel(
+                                                        ui,
+                                                        &self.state,
+                                                    );
+                                                });
+                                            });
                                     });
                                 });
                         });
@@ -175,22 +250,9 @@ impl eframe::App for DashboardApp {
                         // GUTTER
                         strip.empty();
 
-                        // RIGHT COLUMN
+                        // BOTTOM: Error log panel
                         strip.cell(|ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("col_right")
-                                .show(ui, |ui| {
-                                    panel_frame().show(ui, |ui| {
-                                        panels::vol_surface_panel::vol_surface_panel(
-                                            ui,
-                                            &self.state,
-                                        );
-                                    });
-                                    ui.add_space(12.0);
-                                    panel_frame().show(ui, |ui| {
-                                        panels::stress_panel::stress_panel(ui, &self.state);
-                                    });
-                                });
+                            panels::error_log_panel::error_log_panel(ui, &mut self.state);
                         });
                     });
             });
@@ -207,6 +269,11 @@ pub fn panel_frame() -> egui::Frame {
 }
 
 fn main() -> eframe::Result<()> {
+    // Keep the guard alive for the duration of main so the log file is flushed.
+    let _tracing_guard = init_tracing();
+
+    info!("Market Risk Dashboard starting up");
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 860.0]),
         ..Default::default()

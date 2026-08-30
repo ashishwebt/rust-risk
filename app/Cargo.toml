@@ -12,6 +12,9 @@ egui_extras = { version = "0.36.1" }
 crossbeam-channel = "0.5"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 
 [[bin]]
 name = "market_risk_dashboard"
