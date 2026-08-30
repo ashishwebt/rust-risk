@@ -41,11 +41,19 @@ pub fn var_panel(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.add_space(12.0);
 
+    // Compute portfolio value once for % display
+    let portfolio_value: f64 = state
+        .active_positions()
+        .iter()
+        .map(|p| p.bs_inputs().price() * p.notional_quantity())
+        .sum::<f64>()
+        .abs();
+
     // Big VaR numbers
     ui.horizontal(|ui| {
-        var_card(ui, "Historical Sim", state.portfolio_historical_var());
+        var_card(ui, "Historical Sim", state.portfolio_historical_var(), portfolio_value);
         ui.add_space(16.0);
-        var_card(ui, "Parametric (Var-Cov)", state.portfolio_parametric_var());
+        var_card(ui, "Parametric (Var-Cov)", state.portfolio_parametric_var(), portfolio_value);
     });
 
     ui.add_space(10.0);
@@ -67,7 +75,7 @@ pub fn var_panel(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// A self-contained card showing a VaR figure prominently.
-fn var_card(ui: &mut egui::Ui, label: &str, value: f64) {
+fn var_card(ui: &mut egui::Ui, label: &str, value: f64, portfolio_value: f64) {
     egui::Frame::new()
         .fill(egui::Color32::from_rgb(12, 16, 26))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 52, 80)))
@@ -85,8 +93,13 @@ fn var_card(ui: &mut egui::Ui, label: &str, value: f64) {
                         .strong(),
                 );
                 ui.add_space(2.0);
+                let pct_text = if portfolio_value > 0.0 {
+                    format!("({:.1}% of portfolio)", value / portfolio_value * 100.0)
+                } else {
+                    "—".to_string()
+                };
                 ui.label(
-                    egui::RichText::new(format!("({:.1}% of portfolio)", value / 100.0))
+                    egui::RichText::new(pct_text)
                         .color(ACCENT)
                         .size(10.0),
                 );

@@ -11,14 +11,19 @@ pub fn vol_surface_panel(ui: &mut egui::Ui, state: &AppState) {
 
     let surf = &state.vol_surface;
 
+    let n_strikes = surf.strikes.len();
     let mut builder = TableBuilder::new(ui)
         .id_salt("vol_surface_table")
         .striped(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::auto().at_least(72.0));
+        .column(Column::exact(56.0)); // Expiry label
 
-    for _ in &surf.strikes {
-        builder = builder.column(Column::auto().at_least(68.0));
+    for i in 0..n_strikes {
+        if i + 1 < n_strikes {
+            builder = builder.column(Column::exact(52.0));
+        } else {
+            builder = builder.column(Column::remainder().at_least(52.0));
+        }
     }
 
     builder

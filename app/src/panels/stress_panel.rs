@@ -14,14 +14,15 @@ pub fn stress_panel(ui: &mut egui::Ui, state: &AppState) {
     TableBuilder::new(ui)
         .id_salt("stress_table")
         .striped(true)
-        .resizable(true)
+        .resizable(false)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::remainder().at_least(230.0)) // Scenario name
-        .column(Column::auto().at_least(105.0))      // Base Value
-        .column(Column::auto().at_least(105.0))      // Stressed Value
-        .column(Column::auto().at_least(110.0))      // P&L
+        // The stress card intentionally lives in the narrow side rail.  Keep
+        // the table to a readable two-column summary instead of rendering
+        // several off-screen columns there.
+        .column(Column::remainder().at_least(160.0)) // Scenario name
+        .column(Column::exact(96.0))                 // P&L
         .header(24.0, |mut header| {
-            for label in ["Scenario", "Base Value", "Stressed Value", "P&L"] {
+            for label in ["Scenario", "P&L"] {
                 header.col(|ui| {
                     ui.label(
                         egui::RichText::new(label)
@@ -39,18 +40,6 @@ pub fn stress_panel(ui: &mut egui::Ui, state: &AppState) {
                         ui.label(
                             egui::RichText::new(&result.scenario_name)
                                 .color(egui::Color32::from_rgb(200, 210, 235)),
-                        );
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("${:.0}", result.base_value))
-                                .color(egui::Color32::from_rgb(170, 180, 205)),
-                        );
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("${:.0}", result.stressed_value))
-                                .color(egui::Color32::from_rgb(200, 210, 230)),
                         );
                     });
                     row.col(|ui| {

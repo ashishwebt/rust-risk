@@ -140,15 +140,26 @@ impl eframe::App for DashboardApp {
                         ("Yahoo Finance", SourceChoice::Yahoo),
                     ] {
                         let selected = self.state.source_choice == choice;
-                        let text = if selected {
-                            egui::RichText::new(label)
-                                .color(egui::Color32::from_rgb(100, 200, 255))
-                                .strong()
+                        let (fg, bg, stroke_color) = if selected {
+                            (
+                                egui::Color32::WHITE,
+                                egui::Color32::from_rgb(30, 90, 180),  // vivid blue bg
+                                egui::Color32::from_rgb(80, 160, 255), // bright border
+                            )
                         } else {
-                            egui::RichText::new(label)
-                                .color(egui::Color32::from_rgb(160, 175, 195))
+                            (
+                                egui::Color32::from_rgb(155, 170, 190),
+                                egui::Color32::from_rgb(26, 32, 46),
+                                egui::Color32::from_rgb(45, 58, 80),
+                            )
                         };
-                        if ui.selectable_label(selected, text).clicked() {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label).color(fg).size(12.0),
+                        )
+                        .fill(bg)
+                        .stroke(egui::Stroke::new(1.0, stroke_color))
+                        .corner_radius(egui::epaint::CornerRadius::same(4));
+                        if ui.add(btn).clicked() {
                             self.state.switch_source(choice);
                         }
                     }
@@ -208,6 +219,10 @@ impl eframe::App for DashboardApp {
                                             .id_salt("col_left")
                                             .show(ui, |ui| {
                                                 panel_frame().show(ui, |ui| {
+                                                    // Frames otherwise shrink to their contents.  The positions
+                                                    // table happens to be wide, but the VaR card is not, which
+                                                    // made the left column look broken at desktop sizes.
+                                                    ui.set_min_width(ui.available_width());
                                                     panels::positions::positions_panel(
                                                         ui,
                                                         &mut self.state,
@@ -219,6 +234,7 @@ impl eframe::App for DashboardApp {
                                                 });
                                                 ui.add_space(12.0);
                                                 panel_frame().show(ui, |ui| {
+                                                    ui.set_min_width(ui.available_width());
                                                     panels::var_panel::var_panel(
                                                         ui,
                                                         &mut self.state,
@@ -236,6 +252,7 @@ impl eframe::App for DashboardApp {
                                             .id_salt("col_right")
                                             .show(ui, |ui| {
                                                 panel_frame().show(ui, |ui| {
+                                                    ui.set_min_width(ui.available_width());
                                                     panels::vol_surface_panel::vol_surface_panel(
                                                         ui,
                                                         &self.state,
@@ -243,6 +260,7 @@ impl eframe::App for DashboardApp {
                                                 });
                                                 ui.add_space(12.0);
                                                 panel_frame().show(ui, |ui| {
+                                                    ui.set_min_width(ui.available_width());
                                                     panels::stress_panel::stress_panel(
                                                         ui,
                                                         &self.state,
