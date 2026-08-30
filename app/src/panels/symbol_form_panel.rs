@@ -1,3 +1,4 @@
+use crate::provider::Provider;
 use crate::state::{AppState, FormOptionType};
 use egui::epaint::CornerRadius;
 use risk_core::Position;
@@ -7,30 +8,24 @@ const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(240, 90, 90);
 const DIM: egui::Color32 = egui::Color32::from_rgb(120, 135, 160);
 
 /// Draw the "Add Position" toggle button + inline form panel.
-///
-/// Call this just below the positions table inside the left column.
 pub fn symbol_form_panel(ui: &mut egui::Ui, state: &mut AppState) {
-    // ── Toggle button ────────────────────────────────────────────────────
     ui.add_space(8.0);
-    let btn_label = if state.position_form.open {
-        "✕  Cancel"
-    } else {
-        "＋  Add Position"
-    };
-    let btn = egui::Button::new(
-        egui::RichText::new(btn_label)
-            .size(12.0)
-            .color(if state.position_form.open {
-                egui::Color32::from_rgb(240, 120, 80)
-            } else {
-                egui::Color32::from_rgb(100, 200, 120)
-            }),
-    )
-    .corner_radius(CornerRadius::same(4));
 
-    if ui.add(btn).clicked() {
+    let btn_label = if state.position_form.open { "✕  Cancel" } else { "＋  Add Position" };
+    let btn_color = if state.position_form.open {
+        egui::Color32::from_rgb(240, 120, 80)
+    } else {
+        egui::Color32::from_rgb(100, 200, 120)
+    };
+
+    if ui
+        .add(
+            egui::Button::new(egui::RichText::new(btn_label).size(12.0).color(btn_color))
+                .corner_radius(CornerRadius::same(4)),
+        )
+        .clicked()
+    {
         state.position_form.open = !state.position_form.open;
-        // Reset error on re-open
         state.position_form.error = None;
     }
 
@@ -40,7 +35,6 @@ pub fn symbol_form_panel(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.add_space(6.0);
 
-    // ── Form frame ───────────────────────────────────────────────────────
     egui::Frame::new()
         .fill(egui::Color32::from_rgb(22, 28, 42))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 65, 95)))
@@ -66,29 +60,29 @@ pub fn symbol_form_panel(ui: &mut egui::Ui, state: &mut AppState) {
                             .desired_width(90.0)
                             .hint_text("e.g. TSLA"),
                     );
-
                     field_label(ui, "Type");
                     ui.horizontal(|ui| {
                         ui.selectable_value(
                             &mut state.position_form.option_type,
                             FormOptionType::Call,
-                            egui::RichText::new("Call").color(egui::Color32::from_rgb(80, 190, 255)),
+                            egui::RichText::new("Call")
+                                .color(egui::Color32::from_rgb(80, 190, 255)),
                         );
                         ui.selectable_value(
                             &mut state.position_form.option_type,
                             FormOptionType::Put,
-                            egui::RichText::new("Put").color(egui::Color32::from_rgb(255, 140, 80)),
+                            egui::RichText::new("Put")
+                                .color(egui::Color32::from_rgb(255, 140, 80)),
                         );
                     });
                     ui.end_row();
 
-                    // Row 2: Strike | Expiry (years)
+                    // Row 2: Strike | Expiry
                     field_label(ui, "Strike");
                     ui.add(
                         egui::TextEdit::singleline(&mut state.position_form.strike)
                             .desired_width(90.0),
                     );
-
                     field_label(ui, "Expiry (y)");
                     ui.add(
                         egui::TextEdit::singleline(&mut state.position_form.expiry)
@@ -97,14 +91,13 @@ pub fn symbol_form_panel(ui: &mut egui::Ui, state: &mut AppState) {
                     );
                     ui.end_row();
 
-                    // Row 3: Quantity | Contract multiplier
+                    // Row 3: Quantity | Multiplier
                     field_label(ui, "Quantity");
                     ui.add(
                         egui::TextEdit::singleline(&mut state.position_form.quantity)
                             .desired_width(90.0)
                             .hint_text("e.g. 10 or -5"),
                     );
-
                     field_label(ui, "Multiplier");
                     ui.add(
                         egui::TextEdit::singleline(&mut state.position_form.contract_multiplier)
@@ -120,7 +113,6 @@ pub fn symbol_form_panel(ui: &mut egui::Ui, state: &mut AppState) {
                             .desired_width(90.0)
                             .hint_text("0.25"),
                     );
-
                     field_label(ui, "Rate");
                     ui.add(
                         egui::TextEdit::singleline(&mut state.position_form.rate)
@@ -129,27 +121,53 @@ pub fn symbol_form_panel(ui: &mut egui::Ui, state: &mut AppState) {
                     );
                     ui.end_row();
 
-                    // Row 5: Dividend yield (spans half row)
+                    // Row 5: Div yield | Providers multi-select
                     field_label(ui, "Div Yield");
                     ui.add(
                         egui::TextEdit::singleline(&mut state.position_form.dividend_yield)
                             .desired_width(90.0)
                             .hint_text("0.0"),
                     );
-                    ui.label(""); // filler
-                    ui.label(""); // filler
+
+                    field_label(ui, "Providers");
+                    ui.horizontal(|ui| {
+                        for &provider in Provider::all() {
+                            let selected =
+                                state.position_form.providers.contains(&provider);
+                            let label = egui::RichText::new(provider.label())
+                                .size(11.0)
+                                .color(if selected {
+                                    egui::Color32::from_rgb(100, 210, 255)
+                                } else {
+                                    egui::Color32::from_rgb(100, 115, 140)
+                                });
+                            if ui.selectable_label(selected, label).clicked() {
+                                if selected {
+                                    state
+                                        .position_form
+                                        .providers
+                                        .retain(|&p| p != provider);
+                                } else {
+                                    state.position_form.providers.push(provider);
+                                }
+                            }
+                        }
+                    });
                     ui.end_row();
                 });
 
-            // ── Validation error ─────────────────────────────────────────
+            // Validation error
             if let Some(err) = &state.position_form.error.clone() {
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(format!("⚠  {err}")).color(ERROR_COLOR).size(11.0));
+                ui.label(
+                    egui::RichText::new(format!("⚠  {err}"))
+                        .color(ERROR_COLOR)
+                        .size(11.0),
+                );
             }
 
             ui.add_space(8.0);
 
-            // ── Submit button ────────────────────────────────────────────
             let submit = egui::Button::new(
                 egui::RichText::new("Add to Portfolio")
                     .color(egui::Color32::from_rgb(120, 220, 140))
@@ -160,14 +178,13 @@ pub fn symbol_form_panel(ui: &mut egui::Ui, state: &mut AppState) {
 
             if ui.add(submit).clicked() {
                 match build_position(&state.position_form) {
-                    Ok(pos) => {
+                    Ok((pos, providers)) => {
                         state.position_form.error = None;
                         state.position_form.open = false;
-                        // Reset form for next use
                         let ot = state.position_form.option_type;
                         state.position_form = crate::state::PositionForm::default();
                         state.position_form.option_type = ot;
-                        state.add_position(pos);
+                        state.add_position(pos, providers);
                     }
                     Err(e) => {
                         state.position_form.error = Some(e);
@@ -185,18 +202,26 @@ fn field_label(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).color(DIM).size(11.0));
 }
 
-/// Parse form strings into a `Position`, returning a user-facing error string on failure.
-fn build_position(form: &crate::state::PositionForm) -> Result<Position, String> {
+fn build_position(
+    form: &crate::state::PositionForm,
+) -> Result<(Position, Vec<Provider>), String> {
     let symbol = form.symbol.trim().to_uppercase();
     if symbol.is_empty() {
         return Err("Symbol is required".into());
+    }
+    if form.providers.is_empty() {
+        return Err("Select at least one provider".into());
     }
 
     let strike = form.strike.trim().parse::<f64>().map_err(|_| "Invalid strike")?;
     let expiry = form.expiry.trim().parse::<f64>().map_err(|_| "Invalid expiry")?;
     let volatility = form.volatility.trim().parse::<f64>().map_err(|_| "Invalid volatility")?;
     let rate = form.rate.trim().parse::<f64>().map_err(|_| "Invalid rate")?;
-    let div = form.dividend_yield.trim().parse::<f64>().map_err(|_| "Invalid dividend yield")?;
+    let div = form
+        .dividend_yield
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| "Invalid dividend yield")?;
     let quantity = form.quantity.trim().parse::<f64>().map_err(|_| "Invalid quantity")?;
     let multiplier = form
         .contract_multiplier
@@ -210,10 +235,10 @@ fn build_position(form: &crate::state::PositionForm) -> Result<Position, String>
     if multiplier <= 0.0 { return Err("Multiplier must be > 0".into()); }
     if quantity == 0.0 { return Err("Quantity cannot be zero".into()); }
 
-    Ok(Position {
-        id: 0, // DB assigns the real id
+    let pos = Position {
+        id: 0,
         underlying_symbol: symbol,
-        spot: 0.0, // will be replaced by first live tick
+        spot: 0.0,
         strike,
         time_to_expiry: expiry,
         rate,
@@ -222,5 +247,7 @@ fn build_position(form: &crate::state::PositionForm) -> Result<Position, String>
         option_type: form.option_type.into(),
         quantity,
         contract_multiplier: multiplier,
-    })
+    };
+
+    Ok((pos, form.providers.clone()))
 }

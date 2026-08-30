@@ -1,4 +1,5 @@
 use crate::db;
+use crate::provider::Provider;
 use data_feed::{
     FeedEvent, FeedManager, FeedStatus, MarketDataSource, MarketTick, MockPushAdapter,
     YahooPollAdapter,
@@ -11,21 +12,15 @@ use rusqlite::Connection;
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, error, info, instrument, warn};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceChoice {
-    Simulated,
-    Yahoo,
-}
+/// App-level provider selection — maps directly to `Provider` enum.
+/// Kept as a separate type so the toolbar binding stays legible.
+pub use crate::provider::Provider as SourceChoice;
 
 const PNL_HISTORY_LEN: usize = 250;
-
-/// Maximum number of error entries kept in the in-app error log.
 const ERROR_LOG_LEN: usize = 50;
 
-/// A single entry in the rolling in-app error log.
 #[derive(Debug, Clone)]
 pub struct ErrorEntry {
-    /// Human-readable timestamp (HH:MM:SS)
     pub timestamp: String,
     pub message: String,
 }
@@ -34,7 +29,6 @@ pub struct ErrorEntry {
 // Add-position form state
 // ---------------------------------------------------------------------------
 
-/// Which option type is selected in the add-position form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormOptionType {
     Call,
@@ -50,9 +44,7 @@ impl From<FormOptionType> for OptionType {
     }
 }
 
-/// All mutable state for the "add position" form panel.
 pub struct PositionForm {
-    /// Whether the form panel is open.
     pub open: bool,
     pub symbol: String,
     pub strike: String,
@@ -63,7 +55,8 @@ pub struct PositionForm {
     pub quantity: String,
     pub contract_multiplier: String,
     pub option_type: FormOptionType,
-    /// Validation error shown inside the form.
+    /// Which providers are checked in the multi-select.
+    pub providers: Vec<Provider>,
     pub error: Option<String>,
 }
 
@@ -80,6 +73,8 @@ impl Default for PositionForm {
             quantity: "1.0".into(),
             contract_multiplier: "100.0".into(),
             option_type: FormOptionType::Call,
+            // Default: both providers selected
+            providers: Provider::all().to_vec(),
             error: None,
         }
     }
@@ -94,9 +89,15 @@ pub struct AppState {
 
     pub feed_manager: FeedManager,
     pub feed_status: FeedStatus,
+
+    /// Currently active provider shown in the toolbar.
     pub source_choice: SourceChoice,
 
     pub positions: Vec<Position>,
+
+    /// Provider list per position id — parallel to `positions`.
+    pub position_providers: HashMap<u64, Vec<Provider>>,
+
     pub latest_ticks: HashMap<String, MarketTick>,
     pub pnl_history: HashMap<String, VecDeque<f64>>,
 
@@ -104,37 +105,40 @@ pub struct AppState {
     pub var_config: VarConfig,
     pub scenarios: Vec<Scenario>,
     pub scenario_results: Vec<ScenarioResult>,
-
     pub portfolio_greeks: Greeks,
 
-    /// Most-recent error string (kept for backward compat with any callers).
     pub last_error: Option<String>,
-
-    /// Rolling log of the last `ERROR_LOG_LEN` errors shown in the UI panel.
     pub error_log: VecDeque<ErrorEntry>,
-
-    /// State for the add-position form panel.
     pub position_form: PositionForm,
 }
 
 impl AppState {
-    /// Build `AppState`, open / migrate the DB, load positions (seeding
-    /// defaults if the table is empty), and start the data feed.
     pub fn new() -> Self {
-        // --- DB setup ---
         let db = Connection::open("risk_dashboard.db")
             .expect("failed to open risk_dashboard.db");
         db::init_db(&db).expect("DB schema migration failed");
 
-        let positions = db::seed_defaults_if_empty(&db).expect("failed to load/seed positions from DB");
+        let rows = db::seed_defaults_if_empty(&db)
+            .expect("failed to load/seed positions from DB");
 
-        // --- Feed ---
-        let symbols = unique_symbols(&positions);
+        let mut positions = Vec::with_capacity(rows.len());
+        let mut position_providers: HashMap<u64, Vec<Provider>> =
+            HashMap::with_capacity(rows.len());
+
+        for (pos, providers) in rows {
+            position_providers.insert(pos.id, providers);
+            positions.push(pos);
+        }
+
+        // Start with Simulated feed; subscribe only symbols relevant to Simulated.
+        let source_choice = SourceChoice::Simulated;
         let mut feed_manager = FeedManager::new();
         let starting_prices = positions
             .iter()
             .map(|p| (p.underlying_symbol.clone(), p.spot))
             .collect::<HashMap<_, _>>();
+
+        let symbols = symbols_for_provider(&positions, &position_providers, source_choice);
         feed_manager.switch(
             Box::new(MockPushAdapter {
                 starting_prices,
@@ -143,7 +147,6 @@ impl AppState {
             symbols,
         );
 
-        // --- Vol surface ---
         let mut vol_surface = VolSurface::new(
             vec![90.0, 95.0, 100.0, 105.0, 110.0],
             vec![0.083, 0.25, 0.5, 1.0],
@@ -154,18 +157,15 @@ impl AppState {
         let scenario_results = run_all_scenarios(&positions, &scenarios);
         let portfolio_greeks = aggregate_greeks(&positions);
 
-        info!(
-            position_count = positions.len(),
-            source = "Simulated",
-            "AppState initialized"
-        );
+        info!(position_count = positions.len(), "AppState initialized");
 
         Self {
             db,
             feed_manager,
             feed_status: FeedStatus::Connecting,
-            source_choice: SourceChoice::Simulated,
+            source_choice,
             positions,
+            position_providers,
             latest_ticks: HashMap::new(),
             pnl_history: HashMap::new(),
             vol_surface,
@@ -188,18 +188,15 @@ impl Default for AppState {
 
 impl AppState {
     // -----------------------------------------------------------------------
-    // Internal helper: push an error into the rolling log and tracing.
+    // Internal helpers
     // -----------------------------------------------------------------------
+
     fn log_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         error!(message = %msg, "feed error");
-
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
         self.last_error = Some(msg.clone());
-        self.error_log.push_back(ErrorEntry {
-            timestamp,
-            message: msg,
-        });
+        self.error_log.push_back(ErrorEntry { timestamp, message: msg });
         if self.error_log.len() > ERROR_LOG_LEN {
             self.error_log.pop_front();
         }
@@ -209,11 +206,12 @@ impl AppState {
     // Position management
     // -----------------------------------------------------------------------
 
-    /// Add a position: persist to DB, push into in-memory list, re-subscribe feed.
-    pub fn add_position(&mut self, pos: Position) {
-        match db::save_position(&self.db, &pos) {
+    /// Add a position with its provider list. Persists to DB and re-subscribes feed.
+    pub fn add_position(&mut self, pos: Position, providers: Vec<Provider>) {
+        match db::save_position(&self.db, &pos, &providers) {
             Ok(saved) => {
                 info!(id = saved.id, symbol = %saved.underlying_symbol, "position added");
+                self.position_providers.insert(saved.id, providers);
                 self.positions.push(saved);
                 self.resubscribe_feed();
                 self.recompute();
@@ -224,19 +222,21 @@ impl AppState {
         }
     }
 
-    /// Remove a position by id: delete from DB, remove from in-memory list, re-subscribe feed.
+    /// Remove a position by id. Cleans up providers map and re-subscribes.
     pub fn remove_position(&mut self, id: u64) {
         match db::delete_position(&self.db, id) {
             Ok(_) => {
                 self.positions.retain(|p| p.id != id);
-                // Drop P&L history for symbols no longer in the book.
+                self.position_providers.remove(&id);
+
                 let active: std::collections::HashSet<&str> = self
                     .positions
                     .iter()
                     .map(|p| p.underlying_symbol.as_str())
                     .collect();
-                self.pnl_history.retain(|sym, _| active.contains(sym.as_str()));
-                self.latest_ticks.retain(|sym, _| active.contains(sym.as_str()));
+                self.pnl_history.retain(|s, _| active.contains(s.as_str()));
+                self.latest_ticks.retain(|s, _| active.contains(s.as_str()));
+
                 info!(id, "position removed");
                 self.resubscribe_feed();
                 self.recompute();
@@ -247,9 +247,14 @@ impl AppState {
         }
     }
 
-    /// Re-subscribe the active feed to the current symbol set.
+    /// Re-subscribe the active feed to only the symbols relevant to the
+    /// current provider.
     fn resubscribe_feed(&mut self) {
-        let symbols = unique_symbols(&self.positions);
+        let symbols = symbols_for_provider(
+            &self.positions,
+            &self.position_providers,
+            self.source_choice,
+        );
         let starting_prices = self
             .positions
             .iter()
@@ -270,7 +275,6 @@ impl AppState {
     // Public API
     // -----------------------------------------------------------------------
 
-    /// Drains every pending event from the feed channel.
     pub fn pump_feed(&mut self) {
         let rx = self.feed_manager.receiver();
         while let Ok(event) = rx.try_recv() {
@@ -313,8 +317,17 @@ impl AppState {
             .map(|t| t.price)
             .unwrap_or(tick.price);
 
+        let current = self.source_choice;
+
         for pos in self.positions.iter_mut() {
-            if pos.underlying_symbol == tick.symbol {
+            // Only update positions that subscribe to the current provider.
+            let subscribed = self
+                .position_providers
+                .get(&pos.id)
+                .map(|pvs| pvs.contains(&current))
+                .unwrap_or(false);
+
+            if subscribed && pos.underlying_symbol == tick.symbol {
                 let pnl_delta = (tick.price - old_spot) * pos.notional_quantity();
                 let history = self
                     .pnl_history
@@ -327,14 +340,16 @@ impl AppState {
                 pos.spot = tick.price;
             }
         }
+
         self.latest_ticks.insert(tick.symbol.clone(), tick);
         self.recompute();
     }
 
     #[instrument(skip(self))]
     pub fn recompute(&mut self) {
-        self.portfolio_greeks = aggregate_greeks(&self.positions);
-        self.scenario_results = run_all_scenarios(&self.positions, &self.scenarios);
+        let active = self.active_positions();
+        self.portfolio_greeks = aggregate_greeks(&active);
+        self.scenario_results = run_all_scenarios(&active, &self.scenarios);
         debug!("risk metrics recomputed");
     }
 
@@ -345,19 +360,26 @@ impl AppState {
         self.resubscribe_feed();
     }
 
-    /// Combined historical-simulation VaR across all positions' P&L histories.
     pub fn portfolio_historical_var(&self) -> f64 {
+        let active = self.active_positions();
+        let symbols: std::collections::HashSet<&str> =
+            active.iter().map(|p| p.underlying_symbol.as_str()).collect();
+
         let n = self
             .pnl_history
-            .values()
-            .map(|v| v.len())
+            .iter()
+            .filter(|(sym, _)| symbols.contains(sym.as_str()))
+            .map(|(_, v)| v.len())
             .max()
             .unwrap_or(0);
         if n == 0 {
             return 0.0;
         }
         let mut combined = vec![0.0; n];
-        for history in self.pnl_history.values() {
+        for (sym, history) in &self.pnl_history {
+            if !symbols.contains(sym.as_str()) {
+                continue;
+            }
             for (i, v) in history.iter().rev().enumerate() {
                 if i < n {
                     combined[n - 1 - i] += v;
@@ -368,18 +390,33 @@ impl AppState {
     }
 
     pub fn portfolio_parametric_var(&self) -> f64 {
-        let portfolio_value: f64 = self
-            .positions
+        let active = self.active_positions();
+        let portfolio_value: f64 = active
             .iter()
             .map(|p| p.bs_inputs().price() * p.notional_quantity())
             .sum();
-        let avg_vol = if self.positions.is_empty() {
+        let avg_vol = if active.is_empty() {
             0.0
         } else {
-            self.positions.iter().map(|p| p.volatility).sum::<f64>() / self.positions.len() as f64
+            active.iter().map(|p| p.volatility).sum::<f64>() / active.len() as f64
         };
         let daily_vol = avg_vol / (252f64).sqrt();
         parametric_var(portfolio_value.abs(), daily_vol, &self.var_config)
+    }
+
+    /// Returns references to positions that belong to the currently active provider.
+    pub fn active_positions(&self) -> Vec<Position> {
+        let current = self.source_choice;
+        self.positions
+            .iter()
+            .filter(|p| {
+                self.position_providers
+                    .get(&p.id)
+                    .map(|pvs| pvs.contains(&current))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -387,13 +424,23 @@ impl AppState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn unique_symbols(positions: &[Position]) -> Vec<String> {
-    positions
-        .iter()
-        .map(|p| p.underlying_symbol.clone())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect()
+/// Collect unique symbols for positions that include `provider` in their list.
+fn symbols_for_provider(
+    positions: &[Position],
+    providers_map: &HashMap<u64, Vec<Provider>>,
+    provider: Provider,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    for pos in positions {
+        if providers_map
+            .get(&pos.id)
+            .map(|pvs| pvs.contains(&provider))
+            .unwrap_or(false)
+        {
+            seen.insert(pos.underlying_symbol.clone());
+        }
+    }
+    seen.into_iter().collect()
 }
 
 fn seed_vol_surface(surface: &mut VolSurface) {

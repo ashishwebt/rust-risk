@@ -1,5 +1,6 @@
 mod db;
 mod panels;
+mod provider;
 mod state;
 
 use data_feed::FeedStatus;
