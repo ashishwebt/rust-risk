@@ -26,8 +26,8 @@ pub fn historical_var(pnl_history: &[f64], config: &VarConfig) -> f64 {
     let idx = ((1.0 - config.confidence) * sorted.len() as f64).floor() as usize;
     let idx = idx.min(sorted.len() - 1);
     let quantile_pnl = sorted[idx];
-    let one_day_var = -quantile_pnl.min(0.0).min(quantile_pnl);
-    (one_day_var.max(0.0)) * config.horizon_days.sqrt()
+    let one_day_var = (-quantile_pnl).max(0.0);
+    one_day_var * config.horizon_days.sqrt()
 }
 
 /// Expected Shortfall (CVaR): average loss beyond the VaR threshold.
@@ -124,7 +124,9 @@ mod tests {
 
     #[test]
     fn historical_var_picks_tail_loss() {
-        let pnl = vec![-100.0, -50.0, -10.0, 5.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
+        let pnl = vec![
+            -100.0, -50.0, -10.0, 5.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0,
+        ];
         let cfg = VarConfig {
             confidence: 0.90,
             horizon_days: 1.0,

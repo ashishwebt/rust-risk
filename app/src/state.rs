@@ -114,12 +114,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let db = Connection::open("risk_dashboard.db")
-            .expect("failed to open risk_dashboard.db");
+        let db = Connection::open("risk_dashboard.db").expect("failed to open risk_dashboard.db");
         db::init_db(&db).expect("DB schema migration failed");
 
-        let rows = db::seed_defaults_if_empty(&db)
-            .expect("failed to load/seed positions from DB");
+        let rows = db::seed_defaults_if_empty(&db).expect("failed to load/seed positions from DB");
 
         let mut positions = Vec::with_capacity(rows.len());
         let mut position_providers: HashMap<u64, Vec<Provider>> =
@@ -196,7 +194,10 @@ impl AppState {
         error!(message = %msg, "feed error");
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
         self.last_error = Some(msg.clone());
-        self.error_log.push_back(ErrorEntry { timestamp, message: msg });
+        self.error_log.push_back(ErrorEntry {
+            timestamp,
+            message: msg,
+        });
         if self.error_log.len() > ERROR_LOG_LEN {
             self.error_log.pop_front();
         }
@@ -205,7 +206,6 @@ impl AppState {
     // -----------------------------------------------------------------------
     // Position management
     // -----------------------------------------------------------------------
-
     /// Add a position with its provider list. Persists to DB and re-subscribes feed.
     pub fn add_position(&mut self, pos: Position, providers: Vec<Provider>) {
         match db::save_position(&self.db, &pos, &providers) {
@@ -361,29 +361,19 @@ impl AppState {
     }
 
     pub fn portfolio_historical_var(&self) -> f64 {
-        let active = self.active_positions();
-        let symbols: std::collections::HashSet<&str> =
-            active.iter().map(|p| p.underlying_symbol.as_str()).collect();
-
         let n = self
             .pnl_history
-            .iter()
-            .filter(|(sym, _)| symbols.contains(sym.as_str()))
-            .map(|(_, v)| v.len())
+            .values()
+            .map(|v| v.len())
             .max()
             .unwrap_or(0);
         if n == 0 {
             return 0.0;
         }
         let mut combined = vec![0.0; n];
-        for (sym, history) in &self.pnl_history {
-            if !symbols.contains(sym.as_str()) {
-                continue;
-            }
-            for (i, v) in history.iter().rev().enumerate() {
-                if i < n {
-                    combined[n - 1 - i] += v;
-                }
+        for history in self.pnl_history.values() {
+            for (i, v) in history.iter().rev().enumerate().take(n) {
+                combined[n - 1 - i] += v;
             }
         }
         historical_var(&combined, &self.var_config)

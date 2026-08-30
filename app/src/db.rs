@@ -58,10 +58,10 @@ pub fn load_positions(conn: &Connection) -> Result<Vec<(Position, Vec<Provider>)
 
     let rows = stmt.query_map([], |row| {
         let opt_str: String = row.get(8)?;
-        let option_type = if opt_str == "Call" {
-            OptionType::Call
-        } else {
-            OptionType::Put
+        let option_type = match opt_str.as_str() {
+            "Call" => OptionType::Call,
+            "Put" => OptionType::Put,
+            other => return Err(rusqlite::Error::InvalidColumnName(other.to_string())),
         };
         let providers_str: String = row.get(11)?;
         Ok((
