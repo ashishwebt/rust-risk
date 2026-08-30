@@ -23,10 +23,13 @@ impl FeedManager {
         }
     }
 
-    /// Swap in a new data source for the given symbols. Old adapter threads
-    /// naturally wind down once they notice the previous sender was
-    /// replaced/dropped (checked via `send` failing), or simply keep
-    /// running harmlessly in the background for this scaffold.
+    /// Swap in a new data source for the given symbols.
+    ///
+    /// A **new channel is created on every call** so that the old adapter's
+    /// background thread loses its only `Sender` clone. The next time that
+    /// thread calls `tx.send(...)` it gets a `SendError` (all receivers
+    /// gone) and shuts itself down — preventing stale mock ticks from
+    /// mixing with real Yahoo ticks on the same channel.
     pub fn switch(&mut self, source: Box<dyn MarketDataSource>, symbols: Vec<String>) {
         let new_name = source.name().to_string();
         info!(
@@ -35,7 +38,15 @@ impl FeedManager {
             symbols = ?symbols,
             "FeedManager switching source"
         );
+
+        // Replace the channel — the old `tx` (held by the previous adapter
+        // thread) becomes disconnected as soon as `self.tx` is overwritten
+        // and no other clones remain.
+        let (tx, rx) = unbounded();
+        self.tx = tx;
+        self.rx = rx;
         self.active_name = new_name;
+
         source.start(symbols, self.tx.clone());
     }
 
